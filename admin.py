@@ -72,12 +72,14 @@ class AdminTab(QWidget):
         sf_lay.addWidget(self.conn_lbl)
         sf_lay.addStretch()
         device_lbl = QLabel(
-            f"🖥  {DEVICE_INFO['hostname']}  ({DEVICE_INFO['os']})  ·  {DEVICE_INFO['local_ip']}")
+            f"🖥  {DEVICE_INFO['hostname']}  ({DEVICE_INFO['os']})  ·  "
+            f"{DEVICE_INFO['local_ip']}  ·  📍 {DEVICE_INFO['location']}")
         device_lbl.setStyleSheet(f"color:{DIM2};font-size:11px;border:none;")
         device_lbl.setToolTip(
             f"OS user: {DEVICE_INFO['os_user']}\n"
             f"Machine: {DEVICE_INFO['machine']}\n"
             f"Python: {DEVICE_INFO['python']}\n"
+            f"Public IP: {DEVICE_INFO['public_ip']}\n"
             f"App version: {DEVICE_INFO['app_version']}")
         sf_lay.addWidget(device_lbl)
         sf_lay.addSpacing(14)
@@ -111,7 +113,7 @@ class AdminTab(QWidget):
         self.otp_table     = self._make_table(
             ["Timestamp","Event","Patient Email","Patient ID","TTL","Reason"])
         self.session_table = self._make_table(
-            ["Timestamp","Role","Action","Detail","Host","IP","OS","OS User"])
+            ["Timestamp","Role","Action","Detail","Host","IP","Location","OS","OS User"])
 
         self.user_table     = self._make_table(
             ["User ID","Display Name","Role","Email","Created","Last Seen","Logins"])
@@ -712,6 +714,7 @@ class AdminTab(QWidget):
                 doc.get("detail",""),
                 device.get("hostname","—"),
                 device.get("local_ip","—"),
+                device.get("location","—"),
                 device.get("os","—"),
                 device.get("os_user","—"),
             ]

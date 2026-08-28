@@ -49,7 +49,50 @@ OTP_CHARS     = string.ascii_uppercase + string.digits
 # This is a native desktop app — every session logged happens on the same
 # machine currently running the process, so this is computed once at
 # import time and attached to every session-log entry for the admin panel
-# ("logged-in device" details): hostname, OS, local user, IP, app version.
+# ("logged-in device" details): hostname, OS, local user, IP, app version,
+# and an approximate location from the machine's public IP.
+
+def _lookup_geo() -> dict:
+    """
+    Best-effort approximate location from the machine's public IP, via a
+    free no-key geolocation lookup. Purely informational — IP geolocation
+    is city/region-level accuracy at best, not precise. Tries a primary
+    HTTPS service, falls back to a secondary one, and fails silently
+    (short timeouts) if there's no internet or both are unreachable, since
+    this must never block or break app startup.
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("https://ipapi.co/json/", timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        city    = data.get("city", "") or ""
+        region  = data.get("region", "") or ""
+        country = data.get("country_name", "") or ""
+        ip      = data.get("ip", "")
+        if ip:
+            return {"public_ip": ip, "city": city, "region": region,
+                     "country": country,
+                     "location": ", ".join(p for p in (city, region, country) if p) or "Unknown"}
+    except Exception:
+        pass
+
+    try:
+        with urllib.request.urlopen("http://ip-api.com/json/", timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("status") == "success":
+            city    = data.get("city", "") or ""
+            region  = data.get("regionName", "") or ""
+            country = data.get("country", "") or ""
+            return {"public_ip": data.get("query", "unknown"),
+                     "city": city, "region": region, "country": country,
+                     "location": ", ".join(p for p in (city, region, country) if p) or "Unknown"}
+    except Exception:
+        pass
+
+    return {"public_ip": "unknown", "city": "", "region": "",
+            "country": "", "location": "Unknown"}
+
 
 def _snapshot_device_info() -> dict:
     try:
@@ -78,7 +121,7 @@ def _snapshot_device_info() -> dict:
         os_user = getpass.getuser()
     except Exception:
         os_user = "unknown"
-    return {
+    info = {
         "hostname":   hostname,
         "local_ip":   local_ip,
         "os":         os_name,
@@ -87,6 +130,8 @@ def _snapshot_device_info() -> dict:
         "python":     platform.python_version(),
         "app_version": VERSION,
     }
+    info.update(_lookup_geo())
+    return info
 
 DEVICE_INFO = _snapshot_device_info()
 

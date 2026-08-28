@@ -2,6 +2,7 @@ import os, json, time, secrets, hashlib, io
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text      import MIMEText
+from email.mime.image     import MIMEImage
 import smtplib
 from pathlib import Path
 
@@ -10,19 +11,96 @@ from PIL import Image
 
 from config import (
     SHARED_FOLDER, PIXEL_SPACING, OTP_TTL_SEC, LOGIN_OTP_TTL_SEC, PBKDF2_ITERS,
-    GMAIL, DB, Session,
+    GMAIL, DB, Session, DEVICE_INFO, LOGO_SVG,
 )
 
 # ── Email sender ──────────────────────────────────────────────────────────────
+def _attach_logo(msg: MIMEMultipart) -> None:
+    """
+    Embeds the app's actual logo (icons/logo.png) as an inline image with
+    Content-ID 'logo' — reference it in HTML via <img src="cid:logo">.
+    Silently skipped if the logo file is missing, so email sending never
+    breaks because of it.
+    """
+    try:
+        if LOGO_SVG.exists():
+            with open(LOGO_SVG, "rb") as f:
+                img = MIMEImage(f.read())
+            img.add_header("Content-ID", "<logo>")
+            img.add_header("Content-Disposition", "inline", filename="logo.png")
+            msg.attach(img)
+    except Exception:
+        pass
+
+
+def _logo_img_tag(size: int = 30) -> str:
+    """<img> tag referencing the inline logo, with an emoji fallback alt
+    text for clients that block remote/embedded images by default."""
+    return (f'<img src="cid:logo" width="{size}" height="{size}" alt="🏥" '
+            f'style="vertical-align:middle;border-radius:7px;margin-right:9px;'
+            f'display:inline-block;">')
+
+
 def _build_email(subject: str, html: str,
                   from_addr: str, to_addr: str) -> MIMEMultipart:
-    """Helper — assemble a MIMEMultipart email."""
-    msg = MIMEMultipart("alternative")
+    """Helper — assemble a MIMEMultipart email with the inline logo attached."""
+    msg = MIMEMultipart("related")
     msg["Subject"] = subject
     msg["From"]    = f"MRI Secure Transfer <{from_addr}>"
     msg["To"]      = to_addr
-    msg.attach(MIMEText(html, "html"))
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html, "html"))
+    msg.attach(alt)
+    _attach_logo(msg)
     return msg
+
+
+def _device_info_html() -> str:
+    """
+    Small "this is the system that's currently online / sent this OTP"
+    block — inserted into every OTP-bearing email so the recipient can
+    verify the request came from a device/location they recognize.
+    """
+    d = DEVICE_INFO
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"""
+    <div style="background:#0a0e1a;border:1px solid #2a3550;border-radius:8px;
+                padding:12px 14px;margin-top:14px;">
+      <div style="color:#64748b;font-size:10px;letter-spacing:1px;
+                  text-transform:uppercase;font-weight:700;margin-bottom:6px;">
+        🖥 System Currently Online
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;color:#94a3b8;">
+        <tr>
+          <td style="padding:2px 0;width:90px;color:#64748b;">Device</td>
+          <td style="padding:2px 0;">{d['hostname']}  ({d['os']})</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 0;color:#64748b;">Local IP</td>
+          <td style="padding:2px 0;">{d['local_ip']}</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 0;color:#64748b;">Public IP</td>
+          <td style="padding:2px 0;">{d['public_ip']}</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 0;color:#64748b;">Location</td>
+          <td style="padding:2px 0;">📍 {d['location']}</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 0;color:#64748b;">OS User</td>
+          <td style="padding:2px 0;">{d['os_user']}</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 0;color:#64748b;">Time</td>
+          <td style="padding:2px 0;">{now_str}</td>
+        </tr>
+      </table>
+      <div style="color:#f59e0b;font-size:10px;margin-top:8px;">
+        ⚠️ Don't recognize this device or location? Don't share this code — contact your administrator.
+      </div>
+    </div>
+    """
 
 
 def send_dual_otp_emails(
@@ -65,7 +143,7 @@ def send_dual_otp_emails(
         <div style="background:linear-gradient(135deg,#1e3a5f,#0f2040);
                     padding:24px 28px 16px;">
           <div style="font-size:20px;font-weight:700;color:#3b82f6;">
-            🏥 MRI Secure Transfer
+            {_logo_img_tag()}MRI Secure Transfer
           </div>
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
             Doctor Verification Required
@@ -101,6 +179,7 @@ def send_dual_otp_emails(
             <tr><td style="color:#64748b;font-size:11px;padding:5px 0;">Issued</td>
                 <td style="color:#e2e8f0;font-size:11px;text-align:right;">{now_str}</td></tr>
           </table>
+          {_device_info_html()}
           <div style="background:#1c2537;border-radius:8px;padding:12px;
                       border-left:3px solid #ef4444;">
             <div style="color:#ef4444;font-size:10px;font-weight:700;
@@ -138,7 +217,7 @@ def send_dual_otp_emails(
         <div style="background:linear-gradient(135deg,#0f2a1a,#0a1a0f);
                     padding:24px 28px 16px;">
           <div style="font-size:20px;font-weight:700;color:#22c55e;">
-            🏥 MRI Secure Transfer
+            {_logo_img_tag()}MRI Secure Transfer
           </div>
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
             Your MRI Scan Results Are Ready
@@ -194,6 +273,7 @@ def send_dual_otp_emails(
               ⏱ Expires: {exp_str}
             </div>
           </div>
+          {_device_info_html()}
 
           <!-- Tumour area summary -->
           <div style="background:#1c2537;border-radius:10px;padding:16px;margin:14px 0;">
@@ -698,7 +778,7 @@ def send_login_otp_email(to_email: str, otp: str,
         <div style="background:linear-gradient(135deg,#0f2040,#1a1a2e);
                     padding:26px 30px 18px;">
           <div style="font-size:20px;font-weight:700;color:{role_color};">
-            🏥 MRI Secure Transfer
+            {_logo_img_tag()}MRI Secure Transfer
           </div>
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
             {role_label} Login Verification
@@ -724,6 +804,7 @@ def send_login_otp_email(to_email: str, otp: str,
               ⏱ Expires at {exp_str} — valid {ttl_label}
             </div>
           </div>
+          {_device_info_html()}
           <div style="background:#1c2537;border-radius:8px;padding:12px;
                       border-left:3px solid #ef4444;margin-top:14px;">
             <div style="color:#ef4444;font-size:10px;font-weight:700;
@@ -746,11 +827,9 @@ def send_login_otp_email(to_email: str, otp: str,
     </body></html>"""
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"🔐 MRI Secure — {role_label} Login OTP"
-        msg["From"]    = f"MRI Secure Transfer <{GMAIL.sender_email}>"
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html, "html"))
+        msg = _build_email(
+            f"🔐 MRI Secure — {role_label} Login OTP",
+            html, GMAIL.sender_email, to_email)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(GMAIL.sender_email, GMAIL.app_password)
             s.sendmail(GMAIL.sender_email, to_email, msg.as_string())
@@ -782,7 +861,7 @@ def send_doctor_verification_otp(to_email: str, otp: str, user_id: str) -> tuple
         <div style="background:linear-gradient(135deg,#2a1a4a,#1a1030);
                     padding:26px 30px 18px;">
           <div style="font-size:20px;font-weight:700;color:#a78bfa;">
-            🏥 MRI Secure Transfer
+            {_logo_img_tag()}MRI Secure Transfer
           </div>
           <div style="font-size:12px;color:#64748b;margin-top:3px;">
             Doctor Registration Verification
@@ -809,6 +888,7 @@ def send_doctor_verification_otp(to_email: str, otp: str, user_id: str) -> tuple
               ⏱ Expires at {exp_str} — valid 5 minutes
             </div>
           </div>
+          {_device_info_html()}
           <div style="background:#1c2537;border-radius:8px;padding:12px;
                       border-left:3px solid #ef4444;margin-top:14px;">
             <div style="color:#ef4444;font-size:10px;font-weight:700;
@@ -831,11 +911,9 @@ def send_doctor_verification_otp(to_email: str, otp: str, user_id: str) -> tuple
     </body></html>"""
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"🔐 MRI Secure — Doctor Registration Verification ({user_id})"
-        msg["From"]    = f"MRI Secure Transfer <{GMAIL.sender_email}>"
-        msg["To"]      = to_email
-        msg.attach(MIMEText(html, "html"))
+        msg = _build_email(
+            f"🔐 MRI Secure — Doctor Registration Verification ({user_id})",
+            html, GMAIL.sender_email, to_email)
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(GMAIL.sender_email, GMAIL.app_password)
             s.sendmail(GMAIL.sender_email, to_email, msg.as_string())
