@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QVBoxLayout,
 )
 from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui  import QPainter, QColor, QFont, QPen, QBrush
+from PyQt6.QtGui  import QPainter, QColor, QFont, QPen, QBrush, QPainterPath
 
 from config import (
     BG, SURF, SURF2, SURF3, BORDER,
@@ -357,7 +357,7 @@ class BarChart(QWidget):
         # Legend (only for grouped/multi-series charts)
         if n_series > 1:
             lx = pad_side
-            p.setFont(QFont("Helvetica Neue", 7.5))
+            p.setFont(QFont("Helvetica Neue", 8))
             for s in self._series:
                 p.setBrush(QBrush(QColor(s["color"])))
                 p.setPen(Qt.PenStyle.NoPen)
@@ -370,6 +370,162 @@ class BarChart(QWidget):
 
 def _darken_hex(hex_color, amount=0.25):
     return _darken(hex_color, amount)
+
+
+class PieChart(QWidget):
+    """Lightweight pie/donut chart drawn with QPainter — no plotting dependency."""
+    def __init__(self, height=180, donut=True, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(height)
+        self.setMaximumHeight(height)
+        self._donut = donut
+        self._slices = []   # list of {"label": str, "value": float, "color": "#hex"}
+
+    def set_data(self, slices):
+        """slices: list of (label, value, color_hex)."""
+        self._slices = [{"label": s[0], "value": s[1], "color": s[2]} for s in slices]
+        self.update()
+
+    def clear(self):
+        self._slices = []; self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        total = sum(s["value"] for s in self._slices)
+        if not self._slices or total <= 0:
+            p.setPen(QColor(DIM))
+            p.setFont(QFont("Helvetica Neue", 10))
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, "No data yet")
+            p.end(); return
+
+        pad = 10
+        legend_w = 120
+        size = min(h - pad * 2, w - legend_w - pad * 2)
+        cx, cy = pad + size / 2, h / 2
+        rect = QRectF(cx - size / 2, cy - size / 2, size, size)
+
+        start_angle = 90 * 16   # Qt angles are in 1/16ths of a degree, 12 o'clock start
+        for s in self._slices:
+            span = -(s["value"] / total) * 360 * 16
+            p.setBrush(QBrush(QColor(s["color"])))
+            p.setPen(QPen(QColor(SURF), 1.5))
+            p.drawPie(rect, int(start_angle), int(span))
+            start_angle += span
+
+        if self._donut:
+            hole = size * 0.5
+            p.setBrush(QBrush(QColor(SURF)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QRectF(cx - hole / 2, cy - hole / 2, hole, hole))
+            p.setPen(QColor(TEXT))
+            p.setFont(QFont("Helvetica Neue", 12, QFont.Weight.Bold))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{int(total)}")
+
+        # Legend
+        lx = pad * 2 + size
+        ly = pad
+        p.setFont(QFont("Helvetica Neue", 9))
+        for s in self._slices:
+            pct = s["value"] / total * 100
+            p.setBrush(QBrush(QColor(s["color"])))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(lx, ly + 2, 9, 9), 2, 2)
+            p.setPen(QColor(TEXT))
+            p.drawText(QRectF(lx + 14, ly, legend_w - 14, 14),
+                       Qt.AlignmentFlag.AlignVCenter, f"{s['label']}")
+            p.setPen(QColor(DIM))
+            p.drawText(QRectF(lx + 14, ly + 12, legend_w - 14, 12),
+                       Qt.AlignmentFlag.AlignVCenter, f"{s['value']:.0f} ({pct:.0f}%)")
+            ly += 30
+        p.end()
+
+
+class LineChart(QWidget):
+    """Lightweight line/trend chart drawn with QPainter — no plotting dependency."""
+    def __init__(self, height=160, color=BLUE, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(height)
+        self.setMaximumHeight(height)
+        self._color = color
+        self._labels = []
+        self._values = []
+
+    def set_data(self, labels, values, color=None):
+        self._labels = list(labels)
+        self._values = [float(v) for v in values]
+        if color: self._color = color
+        self.update()
+
+    def clear(self):
+        self._labels = []; self._values = []; self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        if not self._values:
+            p.setPen(QColor(DIM))
+            p.setFont(QFont("Helvetica Neue", 10))
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignmentFlag.AlignCenter, "No data yet")
+            p.end(); return
+
+        pad_top, pad_bottom, pad_side = 16, 24, 14
+        plot_h = h - pad_top - pad_bottom
+        plot_w = w - pad_side * 2
+        n = len(self._values)
+        max_v = max(self._values) if max(self._values) > 0 else 1.0
+        min_v = 0   # counts always start at zero
+
+        # Gridlines
+        p.setPen(QPen(QColor(BORDER), 1, Qt.PenStyle.DotLine))
+        for frac in (0.0, 0.5, 1.0):
+            y = pad_top + plot_h * (1 - frac)
+            p.drawLine(QRectF(pad_side, y, plot_w, 0).topLeft(),
+                       QRectF(pad_side, y, plot_w, 0).bottomRight())
+
+        def _pt(i, v):
+            x = pad_side + (i / max(n - 1, 1)) * plot_w
+            y = pad_top + plot_h * (1 - (v - min_v) / (max_v - min_v or 1))
+            return x, y
+
+        # Filled area under the line
+        area = QPainterPath()
+        x0, y0 = _pt(0, self._values[0])
+        area.moveTo(x0, pad_top + plot_h)
+        area.lineTo(x0, y0)
+        for i in range(1, n):
+            x, y = _pt(i, self._values[i])
+            area.lineTo(x, y)
+        area.lineTo(_pt(n - 1, self._values[-1])[0], pad_top + plot_h)
+        area.closeSubpath()
+        fill = QColor(self._color); fill.setAlpha(35)
+        p.setBrush(QBrush(fill)); p.setPen(Qt.PenStyle.NoPen)
+        p.drawPath(area)
+
+        # Line + points
+        p.setPen(QPen(QColor(self._color), 2))
+        for i in range(1, n):
+            x1, y1 = _pt(i - 1, self._values[i - 1])
+            x2, y2 = _pt(i, self._values[i])
+            p.drawLine(QRectF(x1, y1, 0, 0).topLeft(), QRectF(x2, y2, 0, 0).topLeft())
+        p.setBrush(QBrush(QColor(self._color))); p.setPen(QPen(QColor(SURF), 1))
+        for i in range(n):
+            x, y = _pt(i, self._values[i])
+            p.drawEllipse(QRectF(x - 2.5, y - 2.5, 5, 5))
+
+        # X labels — thin out if too many points
+        p.setPen(QColor(DIM))
+        p.setFont(QFont("Helvetica Neue", 8))
+        step = max(1, n // 6)
+        for i in range(0, n, step):
+            x, _ = _pt(i, self._values[i])
+            p.drawText(QRectF(x - 24, h - pad_bottom + 4, 48, 14),
+                       Qt.AlignmentFlag.AlignCenter, self._labels[i])
+        p.end()
 
 
 # ── Doctor panel ──────────────────────────────────────────────────────────────

@@ -1,18 +1,24 @@
 import json
+from datetime import datetime, timedelta, timezone
+from collections import Counter, defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QMessageBox,
+    QScrollArea, QGridLayout,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui  import QColor, QFont
 
 from config import (
-    DB, GMAIL, DOCTOR_VERIFY_STORE, OTP_LENGTH,
+    DB, GMAIL, DOCTOR_VERIFY_STORE, OTP_LENGTH, DEVICE_INFO,
     SURF, SURF2, BORDER,
     BLUE, CYAN, RED, GREEN, AMBER, TEXT, DIM, DIM2, PURPLE,
 )
-from theme   import mkbtn, mkbtn_ghost, mkinp, mklbl, mkcard, mkstep_badge, RADIUS, R_SMALL
+from theme   import (
+    mkbtn, mkbtn_ghost, mkinp, mklbl, mkcard, mkstep_badge,
+    PieChart, LineChart, BarChart, RADIUS, R_SMALL,
+)
 from workers import DoctorVerifyEmailWorker
 
 class AdminTab(QWidget):
@@ -24,7 +30,7 @@ class AdminTab(QWidget):
     def __init__(self):
         super().__init__()
         self._build()
-        self._refresh_status()
+        self._refresh_all()
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -65,6 +71,16 @@ class AdminTab(QWidget):
         sf_lay.addWidget(self.conn_dot)
         sf_lay.addWidget(self.conn_lbl)
         sf_lay.addStretch()
+        device_lbl = QLabel(
+            f"🖥  {DEVICE_INFO['hostname']}  ({DEVICE_INFO['os']})  ·  {DEVICE_INFO['local_ip']}")
+        device_lbl.setStyleSheet(f"color:{DIM2};font-size:11px;border:none;")
+        device_lbl.setToolTip(
+            f"OS user: {DEVICE_INFO['os_user']}\n"
+            f"Machine: {DEVICE_INFO['machine']}\n"
+            f"Python: {DEVICE_INFO['python']}\n"
+            f"App version: {DEVICE_INFO['app_version']}")
+        sf_lay.addWidget(device_lbl)
+        sf_lay.addSpacing(14)
         sf_lay.addWidget(self.counts_lbl)
         root.addWidget(self.status_frame)
 
@@ -95,13 +111,14 @@ class AdminTab(QWidget):
         self.otp_table     = self._make_table(
             ["Timestamp","Event","Patient Email","Patient ID","TTL","Reason"])
         self.session_table = self._make_table(
-            ["Timestamp","Role","Action","Detail"])
+            ["Timestamp","Role","Action","Detail","Host","IP","OS","OS User"])
 
         self.user_table     = self._make_table(
             ["User ID","Display Name","Role","Email","Created","Last Seen","Logins"])
         self.doctors_table  = self._make_table(
             ["Doctor ID","Email","Name","Added"])
         self.tabs.addTab(self._build_doctors_tab(),                           "🩺  Doctors")
+        self.tabs.addTab(self._build_analytics_tab(),                         "📊  Analytics")
         self.tabs.addTab(self._wrap_table(self.scan_table,    "🔒 Encrypted Scans"),   "🔒  Scans")
         self.tabs.addTab(self._wrap_table(self.otp_table,     "🔑 OTP Audit Log"),     "🔑  OTP Audit")
         self.tabs.addTab(self._wrap_table(self.session_table, "👥 Session Log"),       "👥  Sessions")
@@ -143,11 +160,194 @@ class AdminTab(QWidget):
 
     def _wrap_table(self, table: QTableWidget, title: str) -> QWidget:
         w = QWidget(); w.setStyleSheet(f"background:{SURF};")
-        lay = QVBoxLayout(w); lay.setContentsMargins(12, 12, 12, 12)
+        lay = QVBoxLayout(w); lay.setContentsMargins(12, 12, 12, 12); lay.setSpacing(8)
+
+        hdr_row = QHBoxLayout(); hdr_row.setSpacing(10)
         lbl = QLabel(title)
-        lbl.setStyleSheet(f"color:{PURPLE};font-size:13px;font-weight:700;margin-bottom:4px;")
-        lay.addWidget(lbl); lay.addWidget(table)
+        lbl.setStyleSheet(f"color:{PURPLE};font-size:13px;font-weight:700;")
+        hdr_row.addWidget(lbl)
+        hdr_row.addStretch()
+
+        search = mkinp("🔎  Search this table…")
+        search.setFixedWidth(260)
+        search.textChanged.connect(lambda text, t=table: self._filter_table(t, text))
+        hdr_row.addWidget(search)
+
+        match_lbl = QLabel("")
+        match_lbl.setStyleSheet(f"color:{DIM};font-size:11px;")
+        hdr_row.addWidget(match_lbl)
+        table._match_lbl = match_lbl     # stashed for _filter_table to update
+        table._search_edit = search      # stashed so refreshes can reapply the filter
+
+        lay.addLayout(hdr_row)
+        lay.addWidget(table)
         return w
+
+    def _filter_table(self, table: QTableWidget, text: str):
+        """Case-insensitive filter — hides rows where no cell contains
+        the search text. Empty search shows every row again."""
+        text = text.strip().lower()
+        visible = 0
+        for r in range(table.rowCount()):
+            if not text:
+                match = True
+            else:
+                match = any(
+                    text in (table.item(r, c).text().lower() if table.item(r, c) else "")
+                    for c in range(table.columnCount())
+                )
+            table.setRowHidden(r, not match)
+            if match: visible += 1
+        lbl = getattr(table, "_match_lbl", None)
+        if lbl is not None:
+            total = table.rowCount()
+            lbl.setText("" if not text else f"{visible} / {total} match")
+
+    def _reapply_filter(self, table: QTableWidget):
+        """Called after a table repopulates (auto-refresh) so an active
+        search doesn't silently reset to showing every row again."""
+        search = getattr(table, "_search_edit", None)
+        if search is not None and search.text().strip():
+            self._filter_table(table, search.text())
+
+    # ── Analytics tab ────────────────────────────────────────────────────────
+    def _build_analytics_tab(self) -> QWidget:
+        outer = QWidget(); outer.setStyleSheet(f"background:{SURF};")
+        outer_lay = QVBoxLayout(outer); outer_lay.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{SURF};}}")
+        outer_lay.addWidget(scroll)
+
+        body = QWidget(); body.setStyleSheet(f"background:{SURF};")
+        lay = QVBoxLayout(body); lay.setContentsMargins(14, 14, 14, 14); lay.setSpacing(14)
+        scroll.setWidget(body)
+
+        hdr = QLabel("📊  Cross-App Analytics — Doctors, Patients & Scan Activity")
+        hdr.setStyleSheet(f"color:{PURPLE};font-size:14px;font-weight:700;")
+        lay.addWidget(hdr)
+        sub = QLabel("Aggregated from live MongoDB data — refreshes with the rest of the admin panel.")
+        sub.setStyleSheet(f"color:{DIM};font-size:11px;")
+        lay.addWidget(sub)
+
+        grid = QGridLayout(); grid.setSpacing(14)
+        lay.addLayout(grid)
+
+        # 1. Users by role — pie
+        c1, l1 = mkcard(accent=PURPLE)
+        l1.addWidget(mklbl("USERS BY ROLE", PURPLE, 10, bold=True))
+        self.chart_role_pie = PieChart(height=170)
+        l1.addWidget(self.chart_role_pie)
+        grid.addWidget(c1, 0, 0)
+
+        # 2. Scans by risk level — pie
+        c2, l2 = mkcard(accent=RED)
+        l2.addWidget(mklbl("SCANS BY RISK LEVEL", RED, 10, bold=True))
+        self.chart_risk_pie = PieChart(height=170)
+        l2.addWidget(self.chart_risk_pie)
+        grid.addWidget(c2, 0, 1)
+
+        # 3. Scan activity over time — line
+        c3, l3 = mkcard(accent=BLUE)
+        l3.addWidget(mklbl("SCANS PER DAY (LAST 14 DAYS)", BLUE, 10, bold=True))
+        self.chart_scans_line = LineChart(height=170, color=BLUE)
+        l3.addWidget(self.chart_scans_line)
+        grid.addWidget(c3, 1, 0)
+
+        # 4. Aggregate tumor region composition — bar
+        c4, l4 = mkcard(accent=CYAN)
+        l4.addWidget(mklbl("AVG. REGION AREA ACROSS ALL SCANS (mm²)", CYAN, 10, bold=True))
+        self.chart_region_bar = BarChart(height=170)
+        l4.addWidget(self.chart_region_bar)
+        grid.addWidget(c4, 1, 1)
+
+        # 5. Top patients by scan count — bar
+        c5, l5 = mkcard(accent=GREEN)
+        l5.addWidget(mklbl("TOP PATIENTS BY SCAN COUNT", GREEN, 10, bold=True))
+        self.chart_top_patients_bar = BarChart(height=170)
+        l5.addWidget(self.chart_top_patients_bar)
+        grid.addWidget(c5, 2, 0)
+
+        # 6. Logins per day — line
+        c6, l6 = mkcard(accent=AMBER)
+        l6.addWidget(mklbl("LOGINS PER DAY (LAST 14 DAYS)", AMBER, 10, bold=True))
+        self.chart_logins_line = LineChart(height=170, color=AMBER)
+        l6.addWidget(self.chart_logins_line)
+        grid.addWidget(c6, 2, 1)
+
+        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
+        return outer
+
+    def _refresh_analytics(self):
+        if not DB.connected:
+            for chart in (self.chart_role_pie, self.chart_risk_pie,
+                          self.chart_scans_line, self.chart_region_bar,
+                          self.chart_top_patients_bar, self.chart_logins_line):
+                chart.clear()
+            return
+
+        users   = DB.get_users(limit=1000)
+        scans   = DB.get_scans(limit=1000)
+        sessions = DB.get_sessions(limit=1000)
+
+        # 1. Users by role
+        role_counts = Counter(u.get("role", "unknown") for u in users)
+        role_colors = {"doctor": BLUE, "patient": GREEN, "unknown": DIM}
+        self.chart_role_pie.set_data([
+            (r.title(), c, role_colors.get(r, DIM)) for r, c in role_counts.items() if c
+        ])
+
+        # 2. Scans by risk level (older scans without a stored risk are skipped)
+        risk_counts = Counter()
+        for s in scans:
+            level = (s.get("risk") or {}).get("level")
+            if level: risk_counts[level] += 1
+        risk_colors = {"Minimal": GREEN, "Low": CYAN, "Moderate": AMBER,
+                       "High": RED, "Critical": RED}
+        self.chart_risk_pie.set_data([
+            (lvl, c, risk_colors.get(lvl, DIM)) for lvl, c in risk_counts.items() if c
+        ])
+
+        # 3 & 6. Scans / logins per day, last 14 days
+        def _daily_counts(records, ts_key="timestamp", filt=None):
+            today = datetime.now(timezone.utc).date()
+            days = [today - timedelta(days=i) for i in range(13, -1, -1)]
+            buckets = defaultdict(int)
+            for r in records:
+                if filt and not filt(r): continue
+                ts = r.get(ts_key, "")
+                try:
+                    d = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+                except Exception:
+                    continue
+                if d in days: buckets[d] += 1
+            labels = [d.strftime("%m/%d") for d in days]
+            values = [buckets[d] for d in days]
+            return labels, values
+
+        labels, values = _daily_counts(scans)
+        self.chart_scans_line.set_data(labels, values, color=BLUE)
+
+        login_labels, login_values = _daily_counts(
+            sessions, filt=lambda r: r.get("action") == "login_success")
+        self.chart_logins_line.set_data(login_labels, login_values, color=AMBER)
+
+        # 4. Average region area across all scans
+        region_sums = defaultdict(float); region_n = defaultdict(int)
+        for s in scans:
+            for region, val in (s.get("areas_mm2") or {}).items():
+                region_sums[region] += val; region_n[region] += 1
+        region_colors = {"Necrotic": RED, "Edema": GREEN, "Enhancing": BLUE}
+        bars = [
+            (region, region_sums[region] / region_n[region], region_colors.get(region, BLUE))
+            for region in region_sums if region_n[region]
+        ]
+        self.chart_region_bar.set_data(bars)
+
+        # 5. Top patients by scan count
+        patient_counts = Counter(s.get("patient_id", "—") for s in scans if s.get("patient_id"))
+        top5 = patient_counts.most_common(5)
+        self.chart_top_patients_bar.set_data([(pid, cnt, GREEN) for pid, cnt in top5])
 
     # ── Doctors tab ──────────────────────────────────────────────────────────
     def _build_doctors_tab(self) -> QWidget:
@@ -229,6 +429,11 @@ class AdminTab(QWidget):
         tbl_hdr = QHBoxLayout()
         tbl_hdr.addWidget(mklbl("Approved Doctors", PURPLE, 12, bold=True))
         tbl_hdr.addStretch()
+        doc_search = mkinp("🔎  Search doctors…")
+        doc_search.setFixedWidth(220)
+        doc_search.textChanged.connect(lambda text: self._filter_table(self.doctors_table, text))
+        self.doctors_table._search_edit = doc_search
+        tbl_hdr.addWidget(doc_search)
         self.remove_doc_btn = mkbtn_ghost("🗑 Remove Selected", RED, h=30)
         self.remove_doc_btn.setFixedWidth(160)
         self.remove_doc_btn.clicked.connect(self._remove_doctor)
@@ -365,6 +570,7 @@ class AdminTab(QWidget):
                 item = QTableWidgetItem(str(v))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter)
                 self.doctors_table.setItem(r, c, item)
+        self._reapply_filter(self.doctors_table)
 
     # ── Refresh helpers ───────────────────────────────────────────────────────
     def _refresh_status(self):
@@ -386,6 +592,7 @@ class AdminTab(QWidget):
         self._load_otp_audit()
         self._load_sessions()
         self._load_users()
+        self._refresh_analytics()
 
     def _reconnect(self):
         DB.reconnect()
@@ -425,6 +632,7 @@ class AdminTab(QWidget):
                 item = QTableWidgetItem(str(v))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter)
                 self.scan_table.setItem(r, c, item)
+        self._reapply_filter(self.scan_table)
 
     def _load_otp_audit(self):
         docs = DB.get_otp_audit()
@@ -458,6 +666,7 @@ class AdminTab(QWidget):
                     item.setForeground(QColor(color))
                     f = QFont(); f.setBold(True); item.setFont(f)
                 self.otp_table.setItem(r, c, item)
+        self._reapply_filter(self.otp_table)
 
     def _load_users(self):
         docs = DB.get_users()
@@ -482,6 +691,7 @@ class AdminTab(QWidget):
                     item.setForeground(QColor(color))
                     f = QFont(); f.setBold(True); item.setFont(f)
                 self.user_table.setItem(r, c, item)
+        self._reapply_filter(self.user_table)
 
     def _load_sessions(self):
         docs = DB.get_sessions()
@@ -494,11 +704,16 @@ class AdminTab(QWidget):
                 "patient": GREEN,
                 "system":  DIM,
             }.get(role, TEXT)
+            device = doc.get("device") or {}
             vals = [
                 doc.get("timestamp","")[:19],
                 role,
                 doc.get("action",""),
                 doc.get("detail",""),
+                device.get("hostname","—"),
+                device.get("local_ip","—"),
+                device.get("os","—"),
+                device.get("os_user","—"),
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(str(v))
@@ -507,6 +722,7 @@ class AdminTab(QWidget):
                     item.setForeground(QColor(color))
                     f = QFont(); f.setBold(True); item.setFont(f)
                 self.session_table.setItem(r, c, item)
+        self._reapply_filter(self.session_table)
 
 
 

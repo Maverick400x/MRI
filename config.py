@@ -1,5 +1,6 @@
 import os, sys, json, hmac, hashlib, secrets, string, smtplib, time
 import threading, zipfile, io as _io
+import platform, socket, getpass
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -27,8 +28,7 @@ except ImportError:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME      = "MRI Secure Transfer"
-VERSION       = "2.0.0"
-# Resolved relative to this file, not the current working directory — so the
+VERSION       = "2.0.0"# Resolved relative to this file, not the current working directory — so the
 # logo loads correctly whether the app is launched via `python3 main.py`,
 # a desktop shortcut, or a packaged .app/.exe.
 APP_ROOT      = Path(__file__).resolve().parent
@@ -44,6 +44,51 @@ OTP_LENGTH    = 8
 OTP_TTL_SEC   = 300
 LOGIN_OTP_TTL_SEC = 60   # login OTP is short-lived — 1 minute only
 OTP_CHARS     = string.ascii_uppercase + string.digits
+
+# ── Device / system info snapshot ─────────────────────────────────────────
+# This is a native desktop app — every session logged happens on the same
+# machine currently running the process, so this is computed once at
+# import time and attached to every session-log entry for the admin panel
+# ("logged-in device" details): hostname, OS, local user, IP, app version.
+
+def _snapshot_device_info() -> dict:
+    try:
+        hostname = socket.gethostname()
+    except Exception:
+        hostname = "unknown"
+    try:
+        local_ip = socket.gethostbyname(hostname)
+        if local_ip.startswith("127."):
+            # Loopback isn't useful — try the outbound-socket trick instead.
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            except Exception:
+                pass
+            finally:
+                s.close()
+    except Exception:
+        local_ip = "unknown"
+    try:
+        os_name = f"{platform.system()} {platform.release()}"
+    except Exception:
+        os_name = "unknown"
+    try:
+        os_user = getpass.getuser()
+    except Exception:
+        os_user = "unknown"
+    return {
+        "hostname":   hostname,
+        "local_ip":   local_ip,
+        "os":         os_name,
+        "os_user":    os_user,
+        "machine":    platform.machine(),
+        "python":     platform.python_version(),
+        "app_version": VERSION,
+    }
+
+DEVICE_INFO = _snapshot_device_info()
 
 TUMOR_COLORS  = {
     "Necrotic":  (255,  50,  50, 160),
@@ -345,6 +390,7 @@ class MongoDB:
                     "action":    action,
                     "detail":    detail,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "device":    DEVICE_INFO,
                 })
             except Exception:
                 pass
