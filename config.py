@@ -288,6 +288,23 @@ def save_env(updates: dict) -> None:
         f.writelines(new_lines)
 
 
+# ── Admin panel credentials — loaded from .env ───────────────────────────────
+# Only the SHA-256 hash of the PIN is ever stored/compared — never the
+# plaintext PIN itself, in source or in .env once overridden.
+_admin_env = load_env()
+ADMIN_USER_ID   = _admin_env.get("ADMIN_USER_ID", "ADMIN")
+ADMIN_PIN_HASH  = _admin_env.get(
+    "ADMIN_PIN_HASH",
+    "cca97efa4456e835e8cdef31cd2ecd69479a5912cf5a1361cccd3992086a76c7")  # sha256("7801955169287")
+
+def verify_admin_pin(user_id: str, pin: str) -> bool:
+    """Constant-time-ish comparison of the admin user ID + PIN hash."""
+    if user_id.strip() != ADMIN_USER_ID:
+        return False
+    return hmac.compare_digest(
+        hashlib.sha256(pin.strip().encode()).hexdigest(), ADMIN_PIN_HASH)
+
+
 # ── Gmail config — loaded from .env ──────────────────────────────────────────
 class GmailConfig:
     """

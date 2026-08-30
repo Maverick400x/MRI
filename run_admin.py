@@ -1,11 +1,90 @@
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame,
+    QLabel, QFrame, QDialog, QLineEdit,
 )
+from PyQt6.QtCore import Qt
 
-from config import APP_NAME, VERSION, GMAIL, BG, SURF, BORDER, TEXT, DIM2
+from config import (
+    APP_NAME, VERSION, GMAIL, verify_admin_pin,
+    BG, SURF, SURF2, BORDER, TEXT, DIM, DIM2, BLUE, RED, BEVEL_LT, BEVEL_DK,
+)
+from theme  import mkbtn, mklbl, R_SMALL
 from admin  import AdminTab
+
+
+class AdminLoginDialog(QDialog):
+    """Gate access to the Admin Panel behind an Admin User ID + PIN — the
+    standalone admin tool previously had no login check at all."""
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"{APP_NAME} — Admin Login")
+        self.setFixedSize(360, 340)
+        self.setStyleSheet(f"QDialog{{background:{BG};}}")
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(28, 26, 28, 24); lay.setSpacing(12)
+
+        icon = QLabel("🔐"); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size:34px;")
+        lay.addWidget(icon)
+
+        title = mklbl("Admin Login", TEXT, 17, bold=True)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(title)
+
+        sub = mklbl("Restricted access — administrators only", DIM, 11)
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(sub)
+        lay.addSpacing(8)
+
+        def _field(placeholder, pw=False):
+            e = QLineEdit(); e.setPlaceholderText(placeholder); e.setFixedHeight(34)
+            if pw: e.setEchoMode(QLineEdit.EchoMode.Password)
+            e.setStyleSheet(f"""
+                QLineEdit{{
+                    background:{SURF2};color:{TEXT};border:1px solid {BORDER};
+                    border-top-color:{BEVEL_DK};border-left-color:{BEVEL_DK};
+                    border-bottom-color:{BEVEL_LT};border-right-color:{BEVEL_LT};
+                    border-radius:{R_SMALL}px;padding:0 10px;font-size:13px;
+                }}
+                QLineEdit:focus{{border:1px solid {BLUE};background:#ffffff;}}
+            """)
+            return e
+
+        lay.addWidget(mklbl("Admin User ID", DIM, 10.5))
+        self.id_e = _field("Enter Admin ID")
+        lay.addWidget(self.id_e)
+
+        lay.addWidget(mklbl("PIN", DIM, 10.5))
+        self.pin_e = _field("Enter Admin PIN", pw=True)
+        self.pin_e.returnPressed.connect(self._try_login)
+        lay.addWidget(self.pin_e)
+
+        self.error_lbl = QLabel(""); self.error_lbl.setWordWrap(True)
+        self.error_lbl.setStyleSheet(f"color:{RED};font-size:11px;")
+        lay.addWidget(self.error_lbl)
+
+        login_btn = mkbtn("Login", BLUE, wide=True, h=36)
+        login_btn.clicked.connect(self._try_login)
+        lay.addWidget(login_btn)
+        lay.addStretch()
+
+        self.id_e.setFocus()
+
+    def _try_login(self):
+        user_id = self.id_e.text().strip()
+        pin     = self.pin_e.text().strip()
+        if not user_id or not pin:
+            self.error_lbl.setText("Enter both Admin User ID and PIN.")
+            return
+        if verify_admin_pin(user_id, pin):
+            self.accept()
+        else:
+            self.error_lbl.setText("❌  Invalid Admin User ID or PIN.")
+            self.pin_e.clear(); self.pin_e.setFocus()
 
 
 class AdminWindow(QMainWindow):
@@ -52,6 +131,11 @@ class AdminWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    login = AdminLoginDialog()
+    if login.exec() != QDialog.DialogCode.Accepted:
+        sys.exit(0)   # cancelled or closed — never open the admin panel
+
     w = AdminWindow()
     w.show()
     sys.exit(app.exec())
