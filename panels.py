@@ -1,9 +1,3 @@
-"""
-panels.py — Doctor and Patient workspace panels.
-
-    DoctorPanel   load MRI files → segment → send OTP → encrypt & deliver
-    PatientPanel  select encrypted scan → decrypt → view & download files
-"""
 import os, json, zipfile
 from datetime import datetime, timezone
 from pathlib import Path

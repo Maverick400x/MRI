@@ -1,18 +1,3 @@
-"""
-agent_analysis.py — Agentic AI analysis for the Doctor Workspace.
-
-Unlike ai_report.py's AIFindingsWorker (a single completion that only sees
-the numbers we hand it), this worker gives the model *tools* — it can
-decide for itself to pull the patient's full scan history or on-file
-profile from MongoDB, reason over what it finds, and only then produce its
-analysis. That tool-use loop is what makes it "agentic" rather than a
-single prompt→response call.
-
-The model still never sees or analyzes the image itself — only pixel-
-derived numbers already computed by simulate_segmentation() / imaging.py —
-and every output stays hedged, preliminary, and requires radiologist
-confirmation, same posture as the rest of this app's AI-assisted features.
-"""
 import json
 import traceback
 
